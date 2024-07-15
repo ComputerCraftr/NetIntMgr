@@ -44,7 +44,7 @@ WIFI_INTERFACE="$WIFI_INTERFACE"
 # Add a delay to ensure the interface status is updated
 sleep 5
 
-ETHERNET_STATUS=\$(ifconfig \$ETHERNET_INTERFACE | grep 'status: active')
+ETHERNET_STATUS=\$(ifconfig \$ETHERNET_INTERFACE | grep 'status: active' || true)
 
 if [ -n "\$ETHERNET_STATUS" ]; then
     # Ethernet is connected, turn off Wi-Fi
