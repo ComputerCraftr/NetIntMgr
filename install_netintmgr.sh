@@ -91,6 +91,10 @@ EOF
 # Load the LaunchDaemon
 load_daemon() {
     echo "Loading the LaunchDaemon..."
+    if launchctl list | grep -q "com.user.netintmgr"; then
+        echo "LaunchDaemon is already loaded. Unloading first..."
+        launchctl unload "$PLIST_PATH"
+    fi
     launchctl load "$PLIST_PATH"
     echo "LaunchDaemon loaded."
 }
@@ -110,9 +114,14 @@ uninstall() {
 
 # Main execution
 main() {
-    read -r -p "Do you want to install or uninstall the network management script? (install/uninstall): " ACTION
+    if [ -f "$SCRIPT_PATH" ] || [ -f "$PLIST_PATH" ]; then
+        read -r -p "Existing installation detected. Do you want to reinstall or uninstall the network management script? (reinstall/uninstall): " ACTION
+    else
+        read -r -p "Do you want to install or uninstall the network management script? (install/uninstall): " ACTION
+    fi
+
     case "$ACTION" in
-    install)
+    install | reinstall)
         detect_interfaces
         create_script
         create_plist
@@ -124,7 +133,7 @@ main() {
         echo "Uninstallation complete. The system will no longer manage network interfaces."
         ;;
     *)
-        echo "Invalid action. Please run the script again and choose 'install' or 'uninstall'."
+        echo "Invalid action. Please run the script again and choose 'install', 'reinstall', or 'uninstall'."
         exit 1
         ;;
     esac
