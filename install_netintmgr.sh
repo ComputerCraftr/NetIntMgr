@@ -71,7 +71,6 @@ create_plist() {
     <string>com.user.netintmgr</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/bin/bash</string>
         <string>$SCRIPT_PATH</string>
     </array>
     <key>RunAtLoad</key>
