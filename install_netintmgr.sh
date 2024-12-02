@@ -38,13 +38,24 @@ create_script() {
 set -euo pipefail
 IFS=\$'\n\t'
 
+LOCKFILE="/tmp/netintmgr.lock"
 ETHERNET_INTERFACE="$ETHERNET_INTERFACE"
 WIFI_INTERFACE="$WIFI_INTERFACE"
+
+# Check if another instance is running
+if [ -f "\$LOCKFILE" ]; then
+    echo "Another instance of the script is already running."
+    exit 1
+fi
+
+# Create the lock file and ensure it's removed on exit
+trap 'rm -f "\$LOCKFILE"; exit' INT TERM EXIT
+touch "\$LOCKFILE"
 
 # Add a delay to ensure the interface status is updated
 sleep 2
 
-ETHERNET_STATUS=\$(ifconfig \$ETHERNET_INTERFACE | grep 'status: active' || true)
+ETHERNET_STATUS=\$(ifconfig \$ETHERNET_INTERFACE 2>/dev/null | grep 'status: active' || true)
 
 if [ -n "\$ETHERNET_STATUS" ]; then
     # Ethernet is connected, turn off Wi-Fi
@@ -53,6 +64,10 @@ else
     # Ethernet is not connected, turn on Wi-Fi
     networksetup -setairportpower \$WIFI_INTERFACE on
 fi
+
+# Remove the lock file
+rm -f "\$LOCKFILE"
+trap - INT TERM EXIT
 EOF
 
     chmod +x "$SCRIPT_PATH"
@@ -62,6 +77,8 @@ EOF
 # Create the LaunchDaemon plist
 create_plist() {
     echo "Creating LaunchDaemon plist..."
+
+    LOG_DIR=${LOG_DIR:-/tmp}
     tee "$PLIST_PATH" >/dev/null <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple Computer//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -79,6 +96,10 @@ create_plist() {
     <array>
         <string>/Library/Preferences/SystemConfiguration</string>
     </array>
+    <key>StandardOutPath</key>
+    <string>$LOG_DIR/netintmgr.out</string>
+    <key>StandardErrorPath</key>
+    <string>$LOG_DIR/netintmgr.err</string>
 </dict>
 </plist>
 EOF
