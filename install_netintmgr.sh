@@ -49,7 +49,7 @@ if [ -f "\$LOCKFILE" ]; then
 fi
 
 # Create the lock file and ensure it's removed on exit
-trap 'rm -f "\$LOCKFILE"; exit' INT TERM EXIT
+trap 'EXIT_CODE=\$?; rm -f "\$LOCKFILE"; exit \$EXIT_CODE' INT TERM EXIT
 touch "\$LOCKFILE"
 
 # Add a delay to ensure the interface status is updated
