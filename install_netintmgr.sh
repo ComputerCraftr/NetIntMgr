@@ -16,15 +16,59 @@ fi
 SCRIPT_PATH="/usr/local/bin/netintmgr.sh"
 PLIST_PATH="/Library/LaunchDaemons/com.user.netintmgr.plist"
 
-# Function to detect network interfaces
+# Validate network interface
+validate_interface() {
+    if ! ifconfig "$1" >/dev/null 2>&1; then
+        echo "Error: Invalid interface '$1'. Please enter a valid network interface."
+        return 1
+    fi
+}
+
+# Process and validate Ethernet interfaces
+process_ethernet_interfaces() {
+    echo "Processing Ethernet interfaces..."
+
+    # Initialize an array to store valid interfaces
+    VALID_INTERFACES=()
+
+    # Split the input and iterate over each interface
+    for interface in $(echo "$ETHERNET_INTERFACES" | tr ',' '\n'); do
+        interface=$(echo "$interface" | xargs) # Trim whitespace
+        if validate_interface "$interface"; then
+            VALID_INTERFACES+=("$interface")
+        fi
+    done
+
+    # Check if we have valid interfaces
+    if [ "${#VALID_INTERFACES[@]}" -eq 0 ]; then
+        echo "No valid Ethernet interfaces detected."
+        return 1
+    fi
+
+    # Store the valid interfaces as a comma-separated string
+    ETHERNET_INTERFACES=$(
+        IFS=','
+        echo "${VALID_INTERFACES[*]}"
+    )
+    echo "Valid Ethernet Interfaces: ${ETHERNET_INTERFACES}"
+}
+
+# Detect network interfaces
 detect_interfaces() {
     echo "Detecting network interfaces..."
     networksetup -listallhardwareports
 
-    read -r -p "Enter the name of the Ethernet interface (e.g., en5): " ETHERNET_INTERFACE
-    read -r -p "Enter the name of the Wi-Fi interface (e.g., en0): " WIFI_INTERFACE
+    # Read and process Ethernet interfaces
+    read -r -p "Enter the list of Ethernet interfaces (comma-separated, e.g., en5,en7): " ETHERNET_INTERFACES
+    process_ethernet_interfaces
 
-    echo "Ethernet Interface: $ETHERNET_INTERFACE"
+    # Read and validate the Wi-Fi interface
+    read -r -p "Enter the name of the Wi-Fi interface (e.g., en0): " WIFI_INTERFACE
+    while ! validate_interface "$WIFI_INTERFACE"; do
+        read -r -p "Enter the name of the Wi-Fi interface (e.g., en0): " WIFI_INTERFACE
+    done
+
+    echo "Ethernet Interfaces: $ETHERNET_INTERFACES"
     echo "Wi-Fi Interface: $WIFI_INTERFACE"
 }
 
@@ -39,7 +83,7 @@ set -euo pipefail
 IFS=\$'\n\t'
 
 LOCKFILE="/tmp/netintmgr.lock"
-ETHERNET_INTERFACE="$ETHERNET_INTERFACE"
+ETHERNET_INTERFACES="$ETHERNET_INTERFACES"
 WIFI_INTERFACE="$WIFI_INTERFACE"
 
 # Check if another instance is running
@@ -55,14 +99,21 @@ touch "\$LOCKFILE"
 # Add a delay to ensure the interface status is updated
 sleep 2
 
-ETHERNET_STATUS=\$(ifconfig \$ETHERNET_INTERFACE 2>/dev/null | grep 'status: active' || true)
+check_ethernet_status() {
+    for interface in \$(echo "\$ETHERNET_INTERFACES" | tr ',' '\n'); do
+        if [ "\$(ifconfig "\$interface" 2>/dev/null | grep -c 'status: active')" -gt 0 ]; then
+            return 0
+        fi
+    done
+    return 1
+}
 
-if [ -n "\$ETHERNET_STATUS" ]; then
+if check_ethernet_status; then
     # Ethernet is connected, turn off Wi-Fi
-    networksetup -setairportpower \$WIFI_INTERFACE off
+    networksetup -setairportpower "\$WIFI_INTERFACE" off
 else
     # Ethernet is not connected, turn on Wi-Fi
-    networksetup -setairportpower \$WIFI_INTERFACE on
+    networksetup -setairportpower "\$WIFI_INTERFACE" on
 fi
 
 # Remove the lock file
@@ -154,7 +205,7 @@ main() {
         ;;
     *)
         echo "Invalid action. Please run the script again and choose 'install', 'reinstall', or 'uninstall'."
-        exit 1
+        return 1
         ;;
     esac
 }
