@@ -21,22 +21,22 @@ log_err() {
 ensure_lock_paths() {
     if [ -L "$LOCK_BASE" ]; then
         log_err "Lock path must not be a symlink: $LOCK_BASE"
-        exit 1
+        return 1
     fi
 
     if [ -e "$LOCK_BASE" ] && [ ! -d "$LOCK_BASE" ]; then
         log_err "Lock path exists but is not a directory: $LOCK_BASE"
-        exit 1
+        return 1
     fi
 
     if [ -L "$LOCK_PID_FILE" ]; then
         log_err "Lock pid file must not be a symlink: $LOCK_PID_FILE"
-        exit 1
+        return 1
     fi
 
     if [ -e "$LOCK_PID_FILE" ] && [ ! -f "$LOCK_PID_FILE" ]; then
         log_err "Lock pid path exists but is not a regular file: $LOCK_PID_FILE"
-        exit 1
+        return 1
     fi
 }
 
@@ -55,17 +55,63 @@ lock_pid_is_valid() {
     esac
 }
 
+inspect_lock_state() {
+    attempt=$1
+    LOCK_STATE=""
+    LOCK_OWNER_PID=""
+
+    if ! ensure_lock_paths; then
+        LOCK_STATE="lock-invalid-unsafe"
+        return 0
+    fi
+
+    if [ ! -d "$LOCK_BASE" ]; then
+        LOCK_STATE="lock-acquired"
+        return 0
+    fi
+
+    if [ ! -e "$LOCK_PID_FILE" ]; then
+        if [ "$attempt" -lt "$LOCK_WAIT_RETRIES" ]; then
+            LOCK_STATE="lock-unknown-settling"
+        else
+            LOCK_STATE="lock-stale-safe-to-clear"
+        fi
+        return 0
+    fi
+
+    LOCK_OWNER_PID=$(read_lock_pid)
+
+    if lock_pid_is_valid "$LOCK_OWNER_PID"; then
+        if kill -0 "$LOCK_OWNER_PID" 2>/dev/null; then
+            LOCK_STATE="lock-live-owned-by-other"
+        elif [ "$attempt" -lt "$LOCK_WAIT_RETRIES" ]; then
+            LOCK_STATE="lock-unknown-settling"
+        else
+            LOCK_STATE="lock-stale-safe-to-clear"
+        fi
+        return 0
+    fi
+
+    if [ "$attempt" -lt "$LOCK_WAIT_RETRIES" ]; then
+        LOCK_STATE="lock-unknown-settling"
+    else
+        LOCK_STATE="lock-stale-safe-to-clear"
+    fi
+}
+
 clear_stale_lock() {
-    ensure_lock_paths
+    if ! ensure_lock_paths; then
+        return 1
+    fi
 
     if [ -f "$LOCK_PID_FILE" ] && ! rm -f -- "$LOCK_PID_FILE"; then
         log_err "Failed to remove stale lock pid file: $LOCK_PID_FILE"
-        exit 1
+        return 1
     fi
 
     if [ -d "$LOCK_BASE" ] && ! rmdir "$LOCK_BASE"; then
         log_err "Refusing to remove non-empty stale lock directory: $LOCK_BASE"
-        exit 1
+        return 1
     fi
 }
 
@@ -75,7 +121,9 @@ release_lock() {
 
     trap - EXIT INT TERM HUP
 
-    ensure_lock_paths
+    if ! ensure_lock_paths; then
+        exit 1
+    fi
 
     if [ ! -d "$LOCK_BASE" ]; then
         exit "$exit_code"
@@ -101,41 +149,48 @@ release_lock() {
 }
 
 acquire_lock() {
-    while ! mkdir "$LOCK_BASE" 2>/dev/null; do
-        attempts=0
+    while :; do
+        if mkdir "$LOCK_BASE" 2>/dev/null; then
+            break
+        fi
 
-        ensure_lock_paths
-
+        attempt=0
         while :; do
-            if [ ! -d "$LOCK_BASE" ]; then
+            inspect_lock_state "$attempt"
+
+            case "$LOCK_STATE" in
+            lock-acquired)
                 break
-            fi
-
-            old_pid=$(read_lock_pid)
-
-            if lock_pid_is_valid "$old_pid"; then
-                if kill -0 "$old_pid" 2>/dev/null; then
-                    log "Another instance is already running with pid $old_pid. Exiting."
-                    exit 0
-                fi
-            fi
-
-            if [ "$attempts" -ge "$LOCK_WAIT_RETRIES" ]; then
+                ;;
+            lock-live-owned-by-other)
+                log "Another instance is already running with pid $LOCK_OWNER_PID. Exiting."
+                exit 0
+                ;;
+            lock-unknown-settling)
+                attempt=$((attempt + 1))
+                sleep "$LOCK_WAIT_INTERVAL"
+                continue
+                ;;
+            lock-stale-safe-to-clear)
                 log "Stale lock directory found. Removing..."
                 clear_stale_lock
                 break
-            fi
-
-            attempts=$((attempts + 1))
-            sleep "$LOCK_WAIT_INTERVAL"
-            ensure_lock_paths
-            if [ ! -d "$LOCK_BASE" ]; then
-                continue
-            fi
+                ;;
+            lock-invalid-unsafe)
+                exit 1
+                ;;
+            *)
+                log_err "Unknown lock state: $LOCK_STATE"
+                exit 1
+                ;;
+            esac
         done
     done
 
-    ensure_lock_paths
+    if ! ensure_lock_paths; then
+        exit 1
+    fi
+
     if ! printf '%s\n' "$$" >"$LOCK_PID_FILE"; then
         log_err "Failed to write lock pid file: $LOCK_PID_FILE"
         clear_stale_lock
