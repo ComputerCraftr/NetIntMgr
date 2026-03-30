@@ -9,6 +9,7 @@ LOCK_WAIT_RETRIES=3
 LOCK_WAIT_INTERVAL=1
 ETHERNET_INTERFACES="__ETHERNET_INTERFACES__"
 WIFI_INTERFACE="__WIFI_INTERFACE__"
+LAST_DESIRED_WIFI_STATE=""
 
 log() {
     printf '%s\n' "$1"
@@ -41,7 +42,7 @@ ensure_lock_paths() {
 }
 
 read_lock_pid() {
-    cat "$LOCK_PID_FILE" 2>/dev/null || printf '%s' ""
+    cat "$LOCK_PID_FILE" 2>/dev/null || true
 }
 
 lock_pid_is_valid() {
@@ -203,34 +204,33 @@ trap 'release_lock' EXIT INT TERM HUP
 
 check_ethernet_status() {
     for interface in $(printf '%s' "$ETHERNET_INTERFACES" | tr ',' '\n'); do
-        if [ "$(ifconfig "$interface" 2>/dev/null | grep -c 'status: active')" -gt 0 ]; then
+        cfg=$(ifconfig "$interface" 2>/dev/null || true)
+        case "$cfg" in
+        *"status: active"*)
             return 0
-        fi
+            ;;
+        esac
     done
     return 1
 }
 
-get_wifi_power_state() {
-    networksetup -getairportpower "$WIFI_INTERFACE" 2>/dev/null | awk '{print $NF}'
-}
-
 set_wifi_power() {
-    desired_state=$1
-    current_state=$(get_wifi_power_state || printf '%s' "")
-
-    case "$desired_state:$current_state" in
-    off:Off | on:On)
-        return 0
-        ;;
-    esac
-
-    networksetup -setairportpower "$WIFI_INTERFACE" "$desired_state"
+    networksetup -setairportpower "$WIFI_INTERFACE" "$1"
 }
 
-if check_ethernet_status; then
-    # Ethernet is connected, turn off Wi-Fi
-    set_wifi_power off
-else
-    # Ethernet is not connected, turn on Wi-Fi
-    set_wifi_power on
-fi
+sync_wifi_state() {
+    if check_ethernet_status; then
+        desired_state="off"
+    else
+        desired_state="on"
+    fi
+
+    if [ "$desired_state" = "$LAST_DESIRED_WIFI_STATE" ]; then
+        return 0
+    fi
+
+    set_wifi_power "$desired_state"
+    LAST_DESIRED_WIFI_STATE=$desired_state
+}
+
+sync_wifi_state

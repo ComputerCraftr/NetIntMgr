@@ -151,14 +151,15 @@ render_template() {
         -v ethernet_interfaces="$ETHERNET_INTERFACES" \
         -v wifi_interface="$WIFI_INTERFACE" \
         -v script_path="$SCRIPT_PATH" \
-        -v log_dir="$LOG_DIR" \
-        '{
-            gsub(/__ETHERNET_INTERFACES__/, ethernet_interfaces)
-            gsub(/__WIFI_INTERFACE__/, wifi_interface)
-            gsub(/__SCRIPT_PATH__/, script_path)
-            gsub(/__LOG_DIR__/, log_dir)
-            print
-        }' "$template_path" >"$destination_path"
+        -v log_dir="$LOG_DIR" '
+            {
+                gsub(/__ETHERNET_INTERFACES__/, ethernet_interfaces)
+                gsub(/__WIFI_INTERFACE__/, wifi_interface)
+                gsub(/__SCRIPT_PATH__/, script_path)
+                gsub(/__LOG_DIR__/, log_dir)
+                print
+            }
+        ' "$template_path" >"$destination_path"
 }
 
 process_ethernet_interfaces() {
