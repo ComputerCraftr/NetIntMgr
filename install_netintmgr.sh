@@ -6,12 +6,6 @@
 # Exit on errors and undefined variables
 set -eu
 
-# Ensure the script is run as root
-if [ "$(id -u)" -ne 0 ]; then
-    printf '%s\n' "This script must be run as root. Please use sudo or run as root user."
-    exit 1
-fi
-
 SCRIPT_PATH="/usr/local/bin/netintmgr.sh"
 PLIST_PATH="/Library/LaunchDaemons/com.user.netintmgr.plist"
 INSTALLER_DIR=$(dirname -- "$0")
@@ -19,6 +13,10 @@ INSTALLER_DIR=$(cd -- "$INSTALLER_DIR" && pwd)
 TEMPLATE_DIR="$INSTALLER_DIR/templates"
 SCRIPT_TEMPLATE_PATH="$TEMPLATE_DIR/netintmgr.sh.tmpl"
 PLIST_TEMPLATE_PATH="$TEMPLATE_DIR/com.user.netintmgr.plist.tmpl"
+ACTION=""
+ETHERNET_INTERFACES="${ETHERNET_INTERFACES:-}"
+WIFI_INTERFACE="${WIFI_INTERFACE:-}"
+LOG_DIR="${LOG_DIR:-/tmp}"
 
 # Validate network interface
 validate_interface() {
@@ -40,6 +38,103 @@ validate_templates() {
     fi
 }
 
+usage() {
+    printf '%s\n' "Usage: $0 [install|reinstall|uninstall] [options]"
+    printf '%s\n' ""
+    printf '%s\n' "Options:"
+    printf '%s\n' "  -e, --ethernet INTERFACES  Comma-separated Ethernet interfaces"
+    printf '%s\n' "  -w, --wifi INTERFACE       Wi-Fi interface"
+    printf '%s\n' "  -l, --log-dir DIR          Log directory for LaunchDaemon output"
+    printf '%s\n' "  -h, --help                 Show this help message"
+    printf '%s\n' ""
+    printf '%s\n' "Examples:"
+    printf '%s\n' "  $0 install --ethernet en5,en7 --wifi en0"
+    printf '%s\n' "  $0 reinstall -e en5 -w en0 --log-dir /var/log"
+    printf '%s\n' "  $0 uninstall"
+}
+
+fail() {
+    exit_code=${2:-1}
+    printf '%s\n' "Error: $1" >&2
+    exit "$exit_code"
+}
+
+usage_error() {
+    printf '%s\n' "Error: $1" >&2
+    printf '%s\n' "Use --help for usage." >&2
+    exit 2
+}
+
+require_root() {
+    if [ "$(id -u)" -ne 0 ]; then
+        fail "This script must be run as root. Please use sudo or run as root user."
+    fi
+}
+
+installation_exists() {
+    [ -f "$SCRIPT_PATH" ] || [ -f "$PLIST_PATH" ]
+}
+
+stdin_is_tty() {
+    [ -t 0 ]
+}
+
+prompt() {
+    var_name=$1
+    prompt_text=$2
+
+    if ! stdin_is_tty; then
+        fail "$prompt_text"
+    fi
+
+    printf '%s' "$prompt_text"
+    # shellcheck disable=SC2034
+    read -r value
+    eval "$var_name=\$value"
+}
+
+parse_args() {
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+        install | reinstall | uninstall)
+            if [ -n "$ACTION" ]; then
+                usage_error "Multiple actions provided."
+            fi
+            ACTION=$1
+            ;;
+        -e | --ethernet)
+            [ "$#" -ge 2 ] || usage_error "Missing value for $1."
+            ETHERNET_INTERFACES=$2
+            shift
+            ;;
+        -w | --wifi)
+            [ "$#" -ge 2 ] || usage_error "Missing value for $1."
+            WIFI_INTERFACE=$2
+            shift
+            ;;
+        -l | --log-dir)
+            [ "$#" -ge 2 ] || usage_error "Missing value for $1."
+            LOG_DIR=$2
+            shift
+            ;;
+        -h | --help)
+            usage
+            exit 0
+            ;;
+        --)
+            shift
+            break
+            ;;
+        *)
+            usage_error "Unknown argument: $1."
+            ;;
+        esac
+        shift
+    done
+
+    [ "$#" -eq 0 ] || usage_error "Unexpected extra arguments: $*"
+}
+
 render_template() {
     template_path=$1
     destination_path=$2
@@ -48,7 +143,7 @@ render_template() {
         -v ethernet_interfaces="$ETHERNET_INTERFACES" \
         -v wifi_interface="$WIFI_INTERFACE" \
         -v script_path="$SCRIPT_PATH" \
-        -v log_dir="${LOG_DIR:-/tmp}" \
+        -v log_dir="$LOG_DIR" \
         '{
             gsub(/__ETHERNET_INTERFACES__/, ethernet_interfaces)
             gsub(/__WIFI_INTERFACE__/, wifi_interface)
@@ -58,14 +153,12 @@ render_template() {
         }' "$template_path" >"$destination_path"
 }
 
-# Process and validate Ethernet interfaces
 process_ethernet_interfaces() {
     printf '%s\n' "Processing Ethernet interfaces..."
     valid_interfaces=""
 
-    # Split the input and iterate over each interface
     for interface in $(printf '%s' "$ETHERNET_INTERFACES" | tr ',' '\n'); do
-        interface=$(printf '%s' "$interface" | xargs) # Trim whitespace
+        interface=$(printf '%s' "$interface" | xargs)
         if validate_interface "$interface"; then
             if [ -n "$valid_interfaces" ]; then
                 valid_interfaces="${valid_interfaces},${interface}"
@@ -75,40 +168,41 @@ process_ethernet_interfaces() {
         fi
     done
 
-    # Check if we have valid interfaces
     if [ -z "$valid_interfaces" ]; then
         printf '%s\n' "No valid Ethernet interfaces detected."
         return 1
     fi
 
-    # Store the valid interfaces as a comma-separated string
     ETHERNET_INTERFACES=$valid_interfaces
     printf '%s\n' "Valid Ethernet Interfaces: ${ETHERNET_INTERFACES}"
 }
 
-# Detect network interfaces
-detect_interfaces() {
+collect_install_config() {
     printf '%s\n' "Detecting network interfaces..."
     networksetup -listallhardwareports
 
-    # Read and process Ethernet interfaces
-    printf '%s' "Enter the list of Ethernet interfaces (comma-separated, e.g., en5,en7): "
-    read -r ETHERNET_INTERFACES
+    if [ -z "$ETHERNET_INTERFACES" ]; then
+        prompt ETHERNET_INTERFACES "Enter the list of Ethernet interfaces (comma-separated, e.g., en5,en7): "
+    fi
+
     process_ethernet_interfaces
 
-    # Read and validate the Wi-Fi interface
-    printf '%s' "Enter the name of the Wi-Fi interface (e.g., en0): "
-    read -r WIFI_INTERFACE
-    while ! validate_interface "$WIFI_INTERFACE"; do
-        printf '%s' "Enter the name of the Wi-Fi interface (e.g., en0): "
-        read -r WIFI_INTERFACE
+    while :; do
+        if [ -z "$WIFI_INTERFACE" ]; then
+            prompt WIFI_INTERFACE "Enter the name of the Wi-Fi interface (e.g., en0): "
+        fi
+
+        if validate_interface "$WIFI_INTERFACE"; then
+            break
+        fi
+
+        WIFI_INTERFACE=""
     done
 
     printf '%s\n' "Ethernet Interfaces: $ETHERNET_INTERFACES"
     printf '%s\n' "Wi-Fi Interface: $WIFI_INTERFACE"
 }
 
-# Create the network management script
 create_script() {
     printf '%s\n' "Creating network management script..."
     render_template "$SCRIPT_TEMPLATE_PATH" "$SCRIPT_PATH"
@@ -116,17 +210,13 @@ create_script() {
     printf '%s\n' "Network management script created at $SCRIPT_PATH"
 }
 
-# Create the LaunchDaemon plist
 create_plist() {
     printf '%s\n' "Creating LaunchDaemon plist..."
-
-    LOG_DIR=${LOG_DIR:-/tmp}
     render_template "$PLIST_TEMPLATE_PATH" "$PLIST_PATH"
     chmod 644 "$PLIST_PATH"
     printf '%s\n' "LaunchDaemon plist created at $PLIST_PATH"
 }
 
-# Load the LaunchDaemon
 load_daemon() {
     printf '%s\n' "Loading the LaunchDaemon..."
     if launchctl list | grep -q "com.user.netintmgr"; then
@@ -137,7 +227,6 @@ load_daemon() {
     printf '%s\n' "LaunchDaemon loaded."
 }
 
-# Unload and remove the LaunchDaemon and script
 uninstall() {
     printf '%s\n' "Unloading and removing the LaunchDaemon and script..."
     if launchctl list | grep -q "com.user.netintmgr"; then
@@ -150,35 +239,63 @@ uninstall() {
     printf '%s\n' "Network management script removed."
 }
 
-# Main execution
+choose_action() {
+    if installation_exists; then
+        prompt ACTION "Existing installation detected. Choose an action (reinstall/uninstall): "
+    else
+        prompt ACTION "Choose an action (install/uninstall): "
+    fi
+}
+
+run_install() {
+    if installation_exists; then
+        fail "Existing installation detected. Use 'reinstall' or 'uninstall' instead."
+    fi
+
+    collect_install_config
+    create_script
+    create_plist
+    load_daemon
+    printf '%s\n' "Installation complete. The system will now manage network interfaces based on connection status."
+}
+
+run_reinstall() {
+    if ! installation_exists; then
+        fail "No existing installation detected. Use 'install' instead."
+    fi
+
+    collect_install_config
+    uninstall
+    create_script
+    create_plist
+    load_daemon
+    printf '%s\n' "Reinstallation complete. The system will now manage network interfaces based on connection status."
+}
+
 main() {
+    parse_args "$@"
+    require_root
     validate_templates
 
-    if [ -f "$SCRIPT_PATH" ] || [ -f "$PLIST_PATH" ]; then
-        printf '%s' "Existing installation detected. Do you want to reinstall or uninstall the network management script? (reinstall/uninstall): "
-        read -r ACTION
-    else
-        printf '%s' "Do you want to install or uninstall the network management script? (install/uninstall): "
-        read -r ACTION
+    if [ -z "$ACTION" ]; then
+        choose_action
     fi
 
     case "$ACTION" in
-    install | reinstall)
-        detect_interfaces
-        create_script
-        create_plist
-        load_daemon
-        printf '%s\n' "Installation complete. The system will now manage network interfaces based on connection status."
+    install)
+        run_install
+        ;;
+    reinstall)
+        run_reinstall
         ;;
     uninstall)
         uninstall
         printf '%s\n' "Uninstallation complete. The system will no longer manage network interfaces."
         ;;
     *)
-        printf '%s\n' "Invalid action. Please run the script again and choose 'install', 'reinstall', or 'uninstall'."
-        return 1
+        usage_error "Invalid action: $ACTION."
         ;;
     esac
 }
 
-main
+main "$@"
