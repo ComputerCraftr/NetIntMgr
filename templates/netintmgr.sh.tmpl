@@ -1,0 +1,43 @@
+#!/bin/bash
+
+# Exit on errors, undefined variables, and pipe failures
+set -euo pipefail
+IFS=$'\n\t'
+
+LOCKFILE="/tmp/netintmgr.lock"
+ETHERNET_INTERFACES="__ETHERNET_INTERFACES__"
+WIFI_INTERFACE="__WIFI_INTERFACE__"
+
+# Check if another instance is running
+if [ -f "$LOCKFILE" ]; then
+    echo "Another instance of the script is already running."
+    exit 1
+fi
+
+# Create the lock file and ensure it's removed on exit
+trap 'EXIT_CODE=$?; rm -f "$LOCKFILE"; exit $EXIT_CODE' INT TERM EXIT
+touch "$LOCKFILE"
+
+# Add a delay to ensure the interface status is updated
+sleep 2
+
+check_ethernet_status() {
+    for interface in $(echo "$ETHERNET_INTERFACES" | tr ',' '\n'); do
+        if [ "$(ifconfig "$interface" 2>/dev/null | grep -c 'status: active')" -gt 0 ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+if check_ethernet_status; then
+    # Ethernet is connected, turn off Wi-Fi
+    networksetup -setairportpower "$WIFI_INTERFACE" off
+else
+    # Ethernet is not connected, turn on Wi-Fi
+    networksetup -setairportpower "$WIFI_INTERFACE" on
+fi
+
+# Remove the lock file
+rm -f "$LOCKFILE"
+trap - INT TERM EXIT

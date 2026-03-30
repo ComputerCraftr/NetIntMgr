@@ -15,6 +15,10 @@ fi
 
 SCRIPT_PATH="/usr/local/bin/netintmgr.sh"
 PLIST_PATH="/Library/LaunchDaemons/com.user.netintmgr.plist"
+INSTALLER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TEMPLATE_DIR="$INSTALLER_DIR/templates"
+SCRIPT_TEMPLATE_PATH="$TEMPLATE_DIR/netintmgr.sh.tmpl"
+PLIST_TEMPLATE_PATH="$TEMPLATE_DIR/com.user.netintmgr.plist.tmpl"
 
 # Validate network interface
 validate_interface() {
@@ -22,6 +26,36 @@ validate_interface() {
         echo "Error: Invalid interface '$1'. Please enter a valid network interface."
         return 1
     fi
+}
+
+validate_templates() {
+    if [ ! -f "$SCRIPT_TEMPLATE_PATH" ]; then
+        echo "Error: Missing script template at $SCRIPT_TEMPLATE_PATH"
+        return 1
+    fi
+
+    if [ ! -f "$PLIST_TEMPLATE_PATH" ]; then
+        echo "Error: Missing plist template at $PLIST_TEMPLATE_PATH"
+        return 1
+    fi
+}
+
+render_template() {
+    local template_path="$1"
+    local destination_path="$2"
+
+    awk \
+        -v ethernet_interfaces="$ETHERNET_INTERFACES" \
+        -v wifi_interface="$WIFI_INTERFACE" \
+        -v script_path="$SCRIPT_PATH" \
+        -v log_dir="${LOG_DIR:-/tmp}" \
+        '{
+            gsub(/__ETHERNET_INTERFACES__/, ethernet_interfaces)
+            gsub(/__WIFI_INTERFACE__/, wifi_interface)
+            gsub(/__SCRIPT_PATH__/, script_path)
+            gsub(/__LOG_DIR__/, log_dir)
+            print
+        }' "$template_path" >"$destination_path"
 }
 
 # Process and validate Ethernet interfaces
@@ -75,52 +109,7 @@ detect_interfaces() {
 # Create the network management script
 create_script() {
     echo "Creating network management script..."
-    tee "$SCRIPT_PATH" >/dev/null <<EOF
-#!/bin/bash
-
-# Exit on errors, undefined variables, and pipe failures
-set -euo pipefail
-IFS=\$'\n\t'
-
-LOCKFILE="/tmp/netintmgr.lock"
-ETHERNET_INTERFACES="$ETHERNET_INTERFACES"
-WIFI_INTERFACE="$WIFI_INTERFACE"
-
-# Check if another instance is running
-if [ -f "\$LOCKFILE" ]; then
-    echo "Another instance of the script is already running."
-    exit 1
-fi
-
-# Create the lock file and ensure it's removed on exit
-trap 'EXIT_CODE=\$?; rm -f "\$LOCKFILE"; exit \$EXIT_CODE' INT TERM EXIT
-touch "\$LOCKFILE"
-
-# Add a delay to ensure the interface status is updated
-sleep 2
-
-check_ethernet_status() {
-    for interface in \$(echo "\$ETHERNET_INTERFACES" | tr ',' '\n'); do
-        if [ "\$(ifconfig "\$interface" 2>/dev/null | grep -c 'status: active')" -gt 0 ]; then
-            return 0
-        fi
-    done
-    return 1
-}
-
-if check_ethernet_status; then
-    # Ethernet is connected, turn off Wi-Fi
-    networksetup -setairportpower "\$WIFI_INTERFACE" off
-else
-    # Ethernet is not connected, turn on Wi-Fi
-    networksetup -setairportpower "\$WIFI_INTERFACE" on
-fi
-
-# Remove the lock file
-rm -f "\$LOCKFILE"
-trap - INT TERM EXIT
-EOF
-
+    render_template "$SCRIPT_TEMPLATE_PATH" "$SCRIPT_PATH"
     chmod +x "$SCRIPT_PATH"
     echo "Network management script created at $SCRIPT_PATH"
 }
@@ -130,31 +119,7 @@ create_plist() {
     echo "Creating LaunchDaemon plist..."
 
     LOG_DIR=${LOG_DIR:-/tmp}
-    tee "$PLIST_PATH" >/dev/null <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple Computer//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.user.netintmgr</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>$SCRIPT_PATH</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>WatchPaths</key>
-    <array>
-        <string>/Library/Preferences/SystemConfiguration</string>
-    </array>
-    <key>StandardOutPath</key>
-    <string>$LOG_DIR/netintmgr.out</string>
-    <key>StandardErrorPath</key>
-    <string>$LOG_DIR/netintmgr.err</string>
-</dict>
-</plist>
-EOF
-
+    render_template "$PLIST_TEMPLATE_PATH" "$PLIST_PATH"
     chmod 644 "$PLIST_PATH"
     echo "LaunchDaemon plist created at $PLIST_PATH"
 }
@@ -185,6 +150,8 @@ uninstall() {
 
 # Main execution
 main() {
+    validate_templates
+
     if [ -f "$SCRIPT_PATH" ] || [ -f "$PLIST_PATH" ]; then
         read -r -p "Existing installation detected. Do you want to reinstall or uninstall the network management script? (reinstall/uninstall): " ACTION
     else
