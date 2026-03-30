@@ -18,22 +18,30 @@ ETHERNET_INTERFACES="${ETHERNET_INTERFACES:-}"
 WIFI_INTERFACE="${WIFI_INTERFACE:-}"
 LOG_DIR="${LOG_DIR:-/tmp}"
 
+log() {
+    printf '%s\n' "$1"
+}
+
+log_err() {
+    printf '%s\n' "$1" >&2
+}
+
 # Validate network interface
 validate_interface() {
     if ! ifconfig "$1" >/dev/null 2>&1; then
-        printf '%s\n' "Error: Invalid interface '$1'. Please enter a valid network interface."
+        log_err "Error: Invalid interface '$1'. Please enter a valid network interface."
         return 1
     fi
 }
 
 validate_templates() {
     if [ ! -f "$SCRIPT_TEMPLATE_PATH" ]; then
-        printf '%s\n' "Error: Missing script template at $SCRIPT_TEMPLATE_PATH"
+        log_err "Error: Missing script template at $SCRIPT_TEMPLATE_PATH"
         return 1
     fi
 
     if [ ! -f "$PLIST_TEMPLATE_PATH" ]; then
-        printf '%s\n' "Error: Missing plist template at $PLIST_TEMPLATE_PATH"
+        log_err "Error: Missing plist template at $PLIST_TEMPLATE_PATH"
         return 1
     fi
 }
@@ -55,13 +63,13 @@ usage() {
 
 fail() {
     exit_code=${2:-1}
-    printf '%s\n' "Error: $1" >&2
+    log_err "Error: $1"
     exit "$exit_code"
 }
 
 usage_error() {
-    printf '%s\n' "Error: $1" >&2
-    printf '%s\n' "Use --help for usage." >&2
+    log_err "Error: $1"
+    log_err "Use --help for usage."
     exit 2
 }
 
@@ -154,7 +162,7 @@ render_template() {
 }
 
 process_ethernet_interfaces() {
-    printf '%s\n' "Processing Ethernet interfaces..."
+    log "Processing Ethernet interfaces..."
     valid_interfaces=""
 
     for interface in $(printf '%s' "$ETHERNET_INTERFACES" | tr ',' '\n'); do
@@ -169,16 +177,16 @@ process_ethernet_interfaces() {
     done
 
     if [ -z "$valid_interfaces" ]; then
-        printf '%s\n' "No valid Ethernet interfaces detected."
+        log "No valid Ethernet interfaces detected."
         return 1
     fi
 
     ETHERNET_INTERFACES=$valid_interfaces
-    printf '%s\n' "Valid Ethernet Interfaces: ${ETHERNET_INTERFACES}"
+    log "Valid Ethernet Interfaces: ${ETHERNET_INTERFACES}"
 }
 
 collect_install_config() {
-    printf '%s\n' "Detecting network interfaces..."
+    log "Detecting network interfaces..."
     networksetup -listallhardwareports
 
     if [ -z "$ETHERNET_INTERFACES" ]; then
@@ -199,44 +207,44 @@ collect_install_config() {
         WIFI_INTERFACE=""
     done
 
-    printf '%s\n' "Ethernet Interfaces: $ETHERNET_INTERFACES"
-    printf '%s\n' "Wi-Fi Interface: $WIFI_INTERFACE"
+    log "Ethernet Interfaces: $ETHERNET_INTERFACES"
+    log "Wi-Fi Interface: $WIFI_INTERFACE"
 }
 
 create_script() {
-    printf '%s\n' "Creating network management script..."
+    log "Creating network management script..."
     render_template "$SCRIPT_TEMPLATE_PATH" "$SCRIPT_PATH"
     chmod +x "$SCRIPT_PATH"
-    printf '%s\n' "Network management script created at $SCRIPT_PATH"
+    log "Network management script created at $SCRIPT_PATH"
 }
 
 create_plist() {
-    printf '%s\n' "Creating LaunchDaemon plist..."
+    log "Creating LaunchDaemon plist..."
     render_template "$PLIST_TEMPLATE_PATH" "$PLIST_PATH"
     chmod 644 "$PLIST_PATH"
-    printf '%s\n' "LaunchDaemon plist created at $PLIST_PATH"
+    log "LaunchDaemon plist created at $PLIST_PATH"
 }
 
 load_daemon() {
-    printf '%s\n' "Loading the LaunchDaemon..."
+    log "Loading the LaunchDaemon..."
     if launchctl list | grep -q "com.user.netintmgr"; then
-        printf '%s\n' "LaunchDaemon is already loaded. Unloading first..."
+        log "LaunchDaemon is already loaded. Unloading first..."
         launchctl unload "$PLIST_PATH"
     fi
     launchctl load "$PLIST_PATH"
-    printf '%s\n' "LaunchDaemon loaded."
+    log "LaunchDaemon loaded."
 }
 
 uninstall() {
-    printf '%s\n' "Unloading and removing the LaunchDaemon and script..."
+    log "Unloading and removing the LaunchDaemon and script..."
     if launchctl list | grep -q "com.user.netintmgr"; then
         launchctl unload "$PLIST_PATH"
-        printf '%s\n' "LaunchDaemon unloaded."
+        log "LaunchDaemon unloaded."
     fi
     rm -f "$PLIST_PATH"
-    printf '%s\n' "LaunchDaemon plist removed."
+    log "LaunchDaemon plist removed."
     rm -f "$SCRIPT_PATH"
-    printf '%s\n' "Network management script removed."
+    log "Network management script removed."
 }
 
 choose_action() {
@@ -256,7 +264,7 @@ run_install() {
     create_script
     create_plist
     load_daemon
-    printf '%s\n' "Installation complete. The system will now manage network interfaces based on connection status."
+    log "Installation complete. The system will now manage network interfaces based on connection status."
 }
 
 run_reinstall() {
@@ -269,7 +277,7 @@ run_reinstall() {
     create_script
     create_plist
     load_daemon
-    printf '%s\n' "Reinstallation complete. The system will now manage network interfaces based on connection status."
+    log "Reinstallation complete. The system will now manage network interfaces based on connection status."
 }
 
 main() {
@@ -290,7 +298,7 @@ main() {
         ;;
     uninstall)
         uninstall
-        printf '%s\n' "Uninstallation complete. The system will no longer manage network interfaces."
+        log "Uninstallation complete. The system will no longer manage network interfaces."
         ;;
     *)
         usage_error "Invalid action: $ACTION."
