@@ -1,21 +1,21 @@
-#!/bin/bash
+#!/bin/sh
 
 # netintmgr - Network Interface Manager
 # This script manages network interfaces to disable Wi-Fi when connected to Ethernet to save power and remove the second default route from the routing tables.
 
-# Exit on errors, undefined variables, and pipe failures
-set -euo pipefail
-IFS=$'\n\t'
+# Exit on errors and undefined variables
+set -eu
 
 # Ensure the script is run as root
 if [ "$(id -u)" -ne 0 ]; then
-    echo "This script must be run as root. Please use sudo or run as root user."
+    printf '%s\n' "This script must be run as root. Please use sudo or run as root user."
     exit 1
 fi
 
 SCRIPT_PATH="/usr/local/bin/netintmgr.sh"
 PLIST_PATH="/Library/LaunchDaemons/com.user.netintmgr.plist"
-INSTALLER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+INSTALLER_DIR=$(dirname -- "$0")
+INSTALLER_DIR=$(cd -- "$INSTALLER_DIR" && pwd)
 TEMPLATE_DIR="$INSTALLER_DIR/templates"
 SCRIPT_TEMPLATE_PATH="$TEMPLATE_DIR/netintmgr.sh.tmpl"
 PLIST_TEMPLATE_PATH="$TEMPLATE_DIR/com.user.netintmgr.plist.tmpl"
@@ -23,26 +23,26 @@ PLIST_TEMPLATE_PATH="$TEMPLATE_DIR/com.user.netintmgr.plist.tmpl"
 # Validate network interface
 validate_interface() {
     if ! ifconfig "$1" >/dev/null 2>&1; then
-        echo "Error: Invalid interface '$1'. Please enter a valid network interface."
+        printf '%s\n' "Error: Invalid interface '$1'. Please enter a valid network interface."
         return 1
     fi
 }
 
 validate_templates() {
     if [ ! -f "$SCRIPT_TEMPLATE_PATH" ]; then
-        echo "Error: Missing script template at $SCRIPT_TEMPLATE_PATH"
+        printf '%s\n' "Error: Missing script template at $SCRIPT_TEMPLATE_PATH"
         return 1
     fi
 
     if [ ! -f "$PLIST_TEMPLATE_PATH" ]; then
-        echo "Error: Missing plist template at $PLIST_TEMPLATE_PATH"
+        printf '%s\n' "Error: Missing plist template at $PLIST_TEMPLATE_PATH"
         return 1
     fi
 }
 
 render_template() {
-    local template_path="$1"
-    local destination_path="$2"
+    template_path=$1
+    destination_path=$2
 
     awk \
         -v ethernet_interfaces="$ETHERNET_INTERFACES" \
@@ -60,92 +60,94 @@ render_template() {
 
 # Process and validate Ethernet interfaces
 process_ethernet_interfaces() {
-    echo "Processing Ethernet interfaces..."
-
-    # Initialize an array to store valid interfaces
-    VALID_INTERFACES=()
+    printf '%s\n' "Processing Ethernet interfaces..."
+    valid_interfaces=""
 
     # Split the input and iterate over each interface
-    for interface in $(echo "$ETHERNET_INTERFACES" | tr ',' '\n'); do
-        interface=$(echo "$interface" | xargs) # Trim whitespace
+    for interface in $(printf '%s' "$ETHERNET_INTERFACES" | tr ',' '\n'); do
+        interface=$(printf '%s' "$interface" | xargs) # Trim whitespace
         if validate_interface "$interface"; then
-            VALID_INTERFACES+=("$interface")
+            if [ -n "$valid_interfaces" ]; then
+                valid_interfaces="${valid_interfaces},${interface}"
+            else
+                valid_interfaces=$interface
+            fi
         fi
     done
 
     # Check if we have valid interfaces
-    if [ "${#VALID_INTERFACES[@]}" -eq 0 ]; then
-        echo "No valid Ethernet interfaces detected."
+    if [ -z "$valid_interfaces" ]; then
+        printf '%s\n' "No valid Ethernet interfaces detected."
         return 1
     fi
 
     # Store the valid interfaces as a comma-separated string
-    ETHERNET_INTERFACES=$(
-        IFS=','
-        echo "${VALID_INTERFACES[*]}"
-    )
-    echo "Valid Ethernet Interfaces: ${ETHERNET_INTERFACES}"
+    ETHERNET_INTERFACES=$valid_interfaces
+    printf '%s\n' "Valid Ethernet Interfaces: ${ETHERNET_INTERFACES}"
 }
 
 # Detect network interfaces
 detect_interfaces() {
-    echo "Detecting network interfaces..."
+    printf '%s\n' "Detecting network interfaces..."
     networksetup -listallhardwareports
 
     # Read and process Ethernet interfaces
-    read -r -p "Enter the list of Ethernet interfaces (comma-separated, e.g., en5,en7): " ETHERNET_INTERFACES
+    printf '%s' "Enter the list of Ethernet interfaces (comma-separated, e.g., en5,en7): "
+    read -r ETHERNET_INTERFACES
     process_ethernet_interfaces
 
     # Read and validate the Wi-Fi interface
-    read -r -p "Enter the name of the Wi-Fi interface (e.g., en0): " WIFI_INTERFACE
+    printf '%s' "Enter the name of the Wi-Fi interface (e.g., en0): "
+    read -r WIFI_INTERFACE
     while ! validate_interface "$WIFI_INTERFACE"; do
-        read -r -p "Enter the name of the Wi-Fi interface (e.g., en0): " WIFI_INTERFACE
+        printf '%s' "Enter the name of the Wi-Fi interface (e.g., en0): "
+        read -r WIFI_INTERFACE
     done
 
-    echo "Ethernet Interfaces: $ETHERNET_INTERFACES"
-    echo "Wi-Fi Interface: $WIFI_INTERFACE"
+    printf '%s\n' "Ethernet Interfaces: $ETHERNET_INTERFACES"
+    printf '%s\n' "Wi-Fi Interface: $WIFI_INTERFACE"
 }
 
 # Create the network management script
 create_script() {
-    echo "Creating network management script..."
+    printf '%s\n' "Creating network management script..."
     render_template "$SCRIPT_TEMPLATE_PATH" "$SCRIPT_PATH"
     chmod +x "$SCRIPT_PATH"
-    echo "Network management script created at $SCRIPT_PATH"
+    printf '%s\n' "Network management script created at $SCRIPT_PATH"
 }
 
 # Create the LaunchDaemon plist
 create_plist() {
-    echo "Creating LaunchDaemon plist..."
+    printf '%s\n' "Creating LaunchDaemon plist..."
 
     LOG_DIR=${LOG_DIR:-/tmp}
     render_template "$PLIST_TEMPLATE_PATH" "$PLIST_PATH"
     chmod 644 "$PLIST_PATH"
-    echo "LaunchDaemon plist created at $PLIST_PATH"
+    printf '%s\n' "LaunchDaemon plist created at $PLIST_PATH"
 }
 
 # Load the LaunchDaemon
 load_daemon() {
-    echo "Loading the LaunchDaemon..."
+    printf '%s\n' "Loading the LaunchDaemon..."
     if launchctl list | grep -q "com.user.netintmgr"; then
-        echo "LaunchDaemon is already loaded. Unloading first..."
+        printf '%s\n' "LaunchDaemon is already loaded. Unloading first..."
         launchctl unload "$PLIST_PATH"
     fi
     launchctl load "$PLIST_PATH"
-    echo "LaunchDaemon loaded."
+    printf '%s\n' "LaunchDaemon loaded."
 }
 
 # Unload and remove the LaunchDaemon and script
 uninstall() {
-    echo "Unloading and removing the LaunchDaemon and script..."
+    printf '%s\n' "Unloading and removing the LaunchDaemon and script..."
     if launchctl list | grep -q "com.user.netintmgr"; then
         launchctl unload "$PLIST_PATH"
-        echo "LaunchDaemon unloaded."
+        printf '%s\n' "LaunchDaemon unloaded."
     fi
     rm -f "$PLIST_PATH"
-    echo "LaunchDaemon plist removed."
+    printf '%s\n' "LaunchDaemon plist removed."
     rm -f "$SCRIPT_PATH"
-    echo "Network management script removed."
+    printf '%s\n' "Network management script removed."
 }
 
 # Main execution
@@ -153,9 +155,11 @@ main() {
     validate_templates
 
     if [ -f "$SCRIPT_PATH" ] || [ -f "$PLIST_PATH" ]; then
-        read -r -p "Existing installation detected. Do you want to reinstall or uninstall the network management script? (reinstall/uninstall): " ACTION
+        printf '%s' "Existing installation detected. Do you want to reinstall or uninstall the network management script? (reinstall/uninstall): "
+        read -r ACTION
     else
-        read -r -p "Do you want to install or uninstall the network management script? (install/uninstall): " ACTION
+        printf '%s' "Do you want to install or uninstall the network management script? (install/uninstall): "
+        read -r ACTION
     fi
 
     case "$ACTION" in
@@ -164,14 +168,14 @@ main() {
         create_script
         create_plist
         load_daemon
-        echo "Installation complete. The system will now manage network interfaces based on connection status."
+        printf '%s\n' "Installation complete. The system will now manage network interfaces based on connection status."
         ;;
     uninstall)
         uninstall
-        echo "Uninstallation complete. The system will no longer manage network interfaces."
+        printf '%s\n' "Uninstallation complete. The system will no longer manage network interfaces."
         ;;
     *)
-        echo "Invalid action. Please run the script again and choose 'install', 'reinstall', or 'uninstall'."
+        printf '%s\n' "Invalid action. Please run the script again and choose 'install', 'reinstall', or 'uninstall'."
         return 1
         ;;
     esac
